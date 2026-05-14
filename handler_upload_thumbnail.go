@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"mime"
@@ -8,41 +10,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
 )
-
-var preferredExt = map[string]string{
-	"image/jpeg":       ".jpg",
-	"image/png":        ".png",
-	"image/gif":        ".gif",
-	"image/webp":       ".webp",
-	"application/pdf":  ".pdf",
-	"text/plain":       ".txt",
-	"text/html":        ".html",
-	"application/json": ".json",
-}
-
-func ExtensionFromContentType(contentType string) (string, error) {
-	mediaType, _, err := mime.ParseMediaType(contentType)
-	if err != nil {
-		return "", err
-	}
-
-	if ext, ok := preferredExt[mediaType]; ok {
-		return ext, nil
-	}
-
-	exts, err := mime.ExtensionsByType(mediaType)
-	if err != nil {
-		return "", err
-	}
-	if len(exts) == 0 {
-		return "", fmt.Errorf("no extension for content type %q", mediaType)
-	}
-
-	return exts[0], nil
-}
 
 func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Request) {
 	videoIDString := r.PathValue("videoID")
@@ -51,20 +20,6 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		respondWithError(w, http.StatusBadRequest, "Invalid ID", err)
 		return
 	}
-
-	token, err := auth.GetBearerToken(r.Header)
-	if err != nil {
-		respondWithError(w, http.StatusUnauthorized, "Couldn't find JWT", err)
-		return
-	}
-
-	userID, err := auth.ValidateJWT(token, cfg.jwtSecret)
-	if err != nil {
-		respondWithError(w, http.StatusUnauthorized, "Couldn't validate JWT", err)
-		return
-	}
-
-	fmt.Println("uploading thumbnail for video", videoID, "by user", userID)
 
 	const maxMemory = 10 << 20
 	r.ParseMultipartForm(maxMemory)
@@ -78,21 +33,18 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	defer file.Close()
 
 	mediaType, _, err := mime.ParseMediaType(header.Header.Get("Content-Type"))
-	// mediaType => e.g. "image/jpeg"
-
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Unable to parse media type", err)
 		return
 	}
 
-	video, err := cfg.db.GetVideo(videoID)
-	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Unable to get video", err)
+	if mediaType != "image/jpeg" && mediaType != "image/png" {
+		respondWithError(w, http.StatusBadRequest, "Unsupported image type", nil)
 		return
 	}
 
-	if video.UserID != userID {
-		respondWithError(w, http.StatusForbidden, "You don't have permission to upload a thumbnail for this video", nil)
+	video, err := cfg.authenticateAndGetVideoMetadata(w, r, videoID)
+	if err != nil {
 		return
 	}
 
@@ -102,7 +54,14 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	filePath := filepath.Join(cfg.assetsRoot, videoID.String()+ext)
+	randBytes := make([]byte, 32)
+	_, err = rand.Read(randBytes)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Could not generate filename", err)
+		return
+	}
+	fileName := base64.RawURLEncoding.EncodeToString(randBytes)
+	filePath := filepath.Join(cfg.assetsRoot, fileName+ext)
 
 	f, err := os.Create(filePath)
 	if err != nil {
@@ -117,12 +76,12 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	thumbnailURL := fmt.Sprintf("http://localhost:%s/assets/%s%s", cfg.port, videoID, ext)
+	thumbnailURL := fmt.Sprintf("http://localhost:%s/assets/%s%s", cfg.port, fileName, ext)
 	video.ThumbnailURL = &thumbnailURL
 
 	err = cfg.db.UpdateVideo(video)
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Failed to update video", err)
+		respondWithError(w, http.StatusInternalServerError, "Failed to update video metadata", err)
 		return
 	}
 
