@@ -13,6 +13,19 @@ import (
 	"github.com/google/uuid"
 )
 
+func generateS3Prefix(width, height int) string {
+	var aspect string
+	switch {
+	case width > height:
+		aspect = "landscape"
+	case height > width:
+		aspect = "portrait"
+	default:
+		aspect = "other"
+	}
+	return "amazonaws.com/" + aspect + "/"
+}
+
 func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request) {
 	videoIDString := r.PathValue("videoID")
 	videoID, err := uuid.Parse(videoIDString)
@@ -61,7 +74,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	tempFileName := base64.RawURLEncoding.EncodeToString(randBytes) + ext
-	awsObjectName := "amazonaws.com/" + tempFileName
+	awsObjectName := tempFileName
 
 	f, err := os.CreateTemp("./tmp", tempFileName)
 	if err != nil {
@@ -76,6 +89,28 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		respondWithError(w, http.StatusInternalServerError, "Could not save file", err)
 		return
 	}
+
+	videoWidth, videoHeight, err := getVideoAspectRatio(f.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Could not get video dimensions", err)
+		return
+	}
+
+	fastStartFilePath, err := processVideoForFastStart(f.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Could not process video for fast start", err)
+		return
+	}
+	defer os.Remove(fastStartFilePath)
+
+	f, err = os.Open(fastStartFilePath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Could not open processed video", err)
+		return
+	}
+	defer f.Close()
+
+	awsObjectName = generateS3Prefix(videoWidth, videoHeight) + awsObjectName
 
 	_, err = f.Seek(0, io.SeekStart)
 	if err != nil {

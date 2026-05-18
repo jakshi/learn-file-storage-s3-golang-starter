@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"mime"
 	"net/http"
+	"os/exec"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/database"
@@ -75,4 +78,46 @@ func (cfg *apiConfig) authenticateAndGetVideoMetadata(w http.ResponseWriter, r *
 	}
 
 	return video, nil
+}
+
+func getVideoAspectRatio(filePath string) (int, int, error) {
+	cmd := exec.Command("ffprobe", "-v", "error", "-print_format", "json", "-show_streams", filePath)
+	output, err := cmd.Output()
+	if err != nil {
+		return 0, 0, err
+	}
+
+	type ffprobeOutput struct {
+		Streams []struct {
+			Width  int `json:"width"`
+			Height int `json:"height"`
+		} `json:"streams"`
+	}
+
+	var result ffprobeOutput
+	err = json.Unmarshal(output, &result)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	width := result.Streams[0].Width
+	height := result.Streams[0].Height
+
+	return width, height, nil
+}
+
+func processVideoForFastStart(filePath string) (string, error) {
+	outputPath := filePath + ".faststart"
+
+	var stdout, stderr bytes.Buffer
+	cmd := exec.Command("ffmpeg", "-i", filePath, "-c:v", "copy", "-c:a", "copy", "-movflags", "+faststart", "-f", "mp4", outputPath)
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err != nil {
+		return "", fmt.Errorf("ffmpeg error: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
+	}
+
+	return outputPath, nil
 }
