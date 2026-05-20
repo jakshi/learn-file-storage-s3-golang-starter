@@ -23,7 +23,7 @@ func generateS3Prefix(width, height int) string {
 	default:
 		aspect = "other"
 	}
-	return "amazonaws.com/" + aspect + "/"
+	return "cloudfront.net/amazonaws.com/" + aspect + "/"
 }
 
 func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request) {
@@ -74,7 +74,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	tempFileName := base64.RawURLEncoding.EncodeToString(randBytes) + ext
-	awsObjectName := tempFileName
+	awsKeyBase := tempFileName
 
 	f, err := os.CreateTemp("./tmp", tempFileName)
 	if err != nil {
@@ -110,7 +110,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	}
 	defer f.Close()
 
-	awsObjectName = generateS3Prefix(videoWidth, videoHeight) + awsObjectName
+	awsS3Key := generateS3Prefix(videoWidth, videoHeight) + awsKeyBase
 
 	_, err = f.Seek(0, io.SeekStart)
 	if err != nil {
@@ -120,7 +120,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 
 	_, err = cfg.s3Client.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket:      &cfg.s3Bucket,
-		Key:         &awsObjectName,
+		Key:         &awsS3Key,
 		Body:        f,
 		ContentType: &mediaType,
 	})
@@ -129,7 +129,10 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	VideoURL := cfg.s3ObjectURL(awsObjectName)
+	// Pre-signed URL logic: store bucket and key as comma separated values
+	// VideoURL := cfg.s3Bucket + "," + awsS3Key
+	// video.VideoURL = &VideoURL
+	VideoURL := cfg.s3ObjectURL(awsS3Key)
 	video.VideoURL = &VideoURL
 	err = cfg.db.UpdateVideo(video)
 	if err != nil {
